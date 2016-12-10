@@ -42,7 +42,6 @@ train.raw$religion.adj[train.raw$religion == ""] <- "Non-Muslim"                
 
 # Making some assumptions here to eliminate some NAs in the hivknow column:
 # * if EVER_HAD_SEX==0 (never had sex), assume you know you don't have HIV (hivknow==1)
-# * if EVER_HAD_SEX==1 (have had sex), assume you know you don't have HIV (hivknow==0)
 train.raw$hivknow[is.na(train.raw$hivknow) & train.raw$EVER_HAD_SEX==1] <- 1
 
 train.raw$geosegsub <- paste(train.raw$geo, train.raw$segment, train.raw$subgroup, sep="")
