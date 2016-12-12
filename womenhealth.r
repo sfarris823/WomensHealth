@@ -1,22 +1,30 @@
-########################
-#### The purpose of this project is to be able to predict the segment and subgroup of an individual
-########################
+########################################################################
+##
+## Dataset:    Women's Health
+## Purpose:    Predict and individual's Segment and Subgroup
+## URL:        https://www.kaggle.com/c/titanic
+## Submitted:  December 11, 2016 - 0.80383
+##
+########################################################################
 
 # Reset the environment
 rm (list=ls())
 
 
+########################################################################
 ##
 ## Install/Load needed libraries
 ##
+########################################################################
 
 # List of packages for session
 .packages = c("caret",          # data partitioning
+              "corrgram",       # correlation of variables
               "ggplot2",        # visualizations
               "randomForest",   # exploratory data analysis
-              "rpart",
-              "rpart.plot",
-              "corrgram"
+              "rpart",          # recursive partitioning
+              "rpart.plot",     # plotting decision trees
+              "lubridate"       # generating unique filenames
             )
 
 # Install CRAN packages (if not already installed)
@@ -25,13 +33,14 @@ if(length(.packages[!.inst]) > 0) install.packages(.packages[!.inst])
 
 # Load packages into session 
 lapply(.packages, library, character.only=TRUE)
-rm(.packages)
-rm(.inst)
+rm(.packages, .inst)
 
 
+########################################################################
 ##
 ## Custom functions
 ##
+########################################################################
 
 # factorit() will take a data frame column and replace NAs, empty 
 # strings with another value and returns the column as a factor
@@ -63,38 +72,47 @@ rpart.cv <- function(seed, training, labels, ctrl)
 }
 
 
+########################################################################
 ##
 ## Get data
 ##
+########################################################################
+
 train.orig <- read.csv("WomenHealth_Training.csv", header=TRUE, stringsAsFactors=FALSE)
 
 # Since I have only training data, I need to separate it into a train and test data set.
 # I want a 70/30 split with stratification based on geo, segment, and subgroup.
 
-# First I need to create the geosegsub variable.
+# First I need to create the geosegsub variable (for stratification).
 train.orig$geosegsub <- paste(train.orig$geo, train.orig$segment, train.orig$subgroup, sep="")
+
+# Then I need to create the segsub variable, which I'll use for prediction later)
+train.orig$segsub <- paste(train.orig$segment, train.orig$subgroup, sep="")
 
 # Using the 'caret' library, I'll create a 70/30 split based on geosegsub and extract the data
 # into a train and test data set.
 partition <- createDataPartition(train.orig$geosegsub, times=1, p=.70, list=FALSE)
 train.raw <- train.orig[ partition,]
-test.raw  <- train.orig[-partition,]
+test.orig  <- train.orig[-partition,]   # We'll use test.orig later to compare the model predictions
+test.raw <- test.orig
 
 # Cleanup variables no longer needed
-rm(partition)
-rm(train.orig)
+rm(partition, train.orig)
 test.raw$geosegsub <- "Unk"
 test.raw$segment <-"Unk"
 test.raw$subgroup <- "Unk"
+test.raw$segsub <- "Unk"
 
 # Now that the data is the way I want it to be, I'll recombined the data so that I can 
 # performance exploratory data analysis
 combined <- rbind(train.raw, test.raw)
 
 
+########################################################################
 ##
-## Explore the data
+## Add new features
 ##
+########################################################################
 
 combined$religion.adj <- combined$religion
 
@@ -139,6 +157,20 @@ combined$religion.adj[combined$religion == ""] <- "Non-Muslim"                  
 # Making some assumptions here to eliminate some NAs in the hivknow column:
 # If EVER_HAD_SEX==0 (never had sex), assume you know you don't have HIV (hivknow==1)
 combined$hivknow[is.na(combined$hivknow) & combined$EVER_HAD_SEX==1] <- 1
+
+# if multpart=="Unk" & EVER_HAD_SEX==0 & EVER_BEEN_PREGNANT==0 then multpart=0
+combined[which(combined$multpart=="Unk" & combined$EVER_HAD_SEX==0 & combined$EVER_BEEN_PREGNANT==0),"multpart"] <- 0
+
+combined$sexactive <- 0
+combined[which(combined$EVER_HAD_SEX==1 | combined$EVER_BEEN_PREGNANT==1 | 
+               combined$multpart!="0"   | combined$ModCon==1 |
+               combined$usecondom==1 ),"sexactive"]  <- 1
+
+#######################################################################
+##
+## Exploratory Data Analysis
+##
+########################################################################
 
 # Convert as much as possible to factors.
 combined$geo <- factorit(combined$geo)
@@ -187,37 +219,82 @@ combined$segment <- factorit(combined$segment)
 combined$subgroup <- factorit(combined$subgroup)
 combined$geosegsub <- factorit(combined$geosegsub)
 combined$religion.adj <- factorit(combined$religion.adj)
+combined$segsub <- factorit(combined$segsub)
+combined$sexactive <- factorit(combined$sexactive)
 
 # Let's see if there are any standout indicators or correlation in our data.
 # Segment - geo, muslim, babydoc
 # Subgroup - hivknow, modcon, multpart, christian
+train.raw$segsub <- as.numeric(train.raw$segsub)
 #corrgram(train.raw)
 
 # random forests
 set.seed(1234)
-#rf.1.features <- c("geo", "religion.adj", "hivknow", "multpart", "married", "CHILDREN")
-#rf.1.features <- c("geo", "muslim", "babydoc")
-rf.1.features <- c("geo", "hivknow", "ModCon", "multpart", "religion.adj")
-rf.1 <- randomForest(x = combined[1:3715, rf.1.features], y = as.factor(train.raw$subgroup), 
-                     importance = T, ntree = 1000)
+rf.1.features <- c("ModCon", "LaborDeliv", "multpart", "tribe", "REGION_PROVINCE", "geo", "babydoc", "hivknow", "sexactive") #~19.84
+rf.1 <- randomForest(x = combined[1:3715, rf.1.features], y = as.factor(train.raw$segsub), importance = T, ntree = 3000)
 rf.1
 varImpPlot(rf.1)
 
 # cross validation
 
 set.seed(37596)
-cv.10.folds <- createMultiFolds(as.factor(train.raw$subgroup), k = 3, times = 10)
+cv.10.folds <- createMultiFolds(as.factor(train.raw$segsub), k = 3, times = 10)
 ctrl.1 <- trainControl(method = "repeatedcv", number = 3, repeats = 10, index = cv.10.folds)
 
 set.seed(94622)
-rf.1.cv.1 <- train(x=combined[1:3715, rf.1.features], y=as.factor(train.raw$subgroup), 
+rf.1.cv.1 <- train(x=combined[1:3715, rf.1.features], y=as.factor(train.raw$segsub), 
                    method="rf", tuneLength=2, ntree=64, trControl=ctrl.1)
 rf.1.cv.1
 
 
 
 rpart.train.1 <- combined[1:3715, rf.1.features]
-rpart.1.cv.1 <- rpart.cv(94622, rpart.train.1, as.factor(train.raw$subgroup), ctrl.1)
+rpart.1.cv.1 <- rpart.cv(94622, rpart.train.1, as.factor(train.raw$segsub), ctrl.1)
 rpart.1.cv.1
 prp(rpart.1.cv.1$finalModel, type=0, extra=1, under=T)
 rpart.1.cv.1$finalModel
+
+########################################################################
+##
+##  Generate Submission
+##
+########################################################################
+
+########################################################################
+##
+##  Generate Submission
+##
+########################################################################
+
+# Collect the test data with all the new features I've built.
+test.submission <- combined[3716:5283, rf.1.features]
+
+# Predict whether the test data individuals survived or perished
+rpart.1.predictions <- predict(rpart.1.cv.1$finalModel, test.submission, type="class")
+length(rpart.1.predictions)
+table(rpart.1.predictions)
+
+# Build and format the actual submission data according to requirements
+# +-------------+---------+----------+
+# | patientID   | Segment | Subgroup |
+# +-------------+---------+----------+
+# | xxxx        | 1 to 4  | 1 or 2   |
+# +-------------+---------+----------+
+submission <- data.frame(patientID=test.orig[labels(rpart.1.predictions),"patientID"], 
+                         segment=substring(rpart.1.predictions,1,1), 
+                         subgroup=substring(rpart.1.predictions,2,2))
+
+# Write the submission out to CSV with no row names.
+filename <- paste(c("WOMENSHEALTH-", format(now(), "%Y%m%d_%H%M%S"), ".csv"), sep="", collapse="")
+write.csv(submission, file=filename, row.names=FALSE)
+
+# Compare results for improvements
+compare <- data.frame(patientID=test.orig$patientID,
+                      segment=test.orig$segment,
+                      subgroup=test.orig$subgroup,
+                      predicted_segment=submission$segment,
+                      predicted_subgroup=submission$subgroup,
+                      prediction_correct=ifelse(test.orig$segment==submission$segment & test.orig$subgroup==submission$subgroup, TRUE, FALSE))
+
+message("Accuracy:  ",format(length(which(compare$prediction_correct==TRUE))/nrow(compare)*100, digits=4), "%")
+
